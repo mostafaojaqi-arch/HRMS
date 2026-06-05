@@ -37,6 +37,7 @@ $configData = Helper::appClasses();
         <!-- /Logo -->
         <h3 class="mb-1">{{ __('Welcome to') . " " . __(env('APP_NAME', 'HRMS')), }}! 👋</h3>
         <p class="mb-4">{{ __('Please sign-in to your account') }}</p>
+        <button type="button" id="switch-account" class="btn btn-sm btn-label-secondary mb-3">{{ __('Use another account') }}</button>
 
         @if (session('status'))
         <div class="alert alert-success mb-1 rounded-0" role="alert">
@@ -50,7 +51,7 @@ $configData = Helper::appClasses();
           @csrf
           <div class="mb-3">
             <label for="login" class="form-label">{{ __('Email or Employee ID') }}</label>
-            <input type="text" class="form-control @error('login') is-invalid @enderror" id="login" name="login" placeholder="example@namaa.sy" autofocus value="{{ old('login') }}">
+            <input type="text" class="form-control @error('login') is-invalid @enderror" id="login" name="login" placeholder="example@namaa.sy" autofocus value="{{ old('login') }}" autocomplete="username" autocapitalize="none" spellcheck="false">
             @error('login')
             <span class="invalid-feedback" role="alert">
               <span class="fw-medium">{{ $message }}</span>
@@ -67,7 +68,7 @@ $configData = Helper::appClasses();
               @endif --}}
             </div>
             <div class="input-group input-group-merge @error('password') is-invalid @enderror">
-              <input type="password" id="login-password" class="form-control @error('password') is-invalid @enderror" name="password" placeholder="&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;" aria-describedby="password" />
+              <input type="password" id="login-password" class="form-control @error('password') is-invalid @enderror" name="password" placeholder="&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;&#xb7;" aria-describedby="password" autocomplete="current-password" />
               <span class="input-group-text cursor-pointer"><i class="ti ti-eye-off"></i></span>
             </div>
             @error('password')
@@ -78,7 +79,7 @@ $configData = Helper::appClasses();
           </div>
           <div class="mb-3">
             <div class="form-check">
-              <input class="form-check-input" type="checkbox" id="remember-me" name="remember" {{ old('remember') ? 'checked' : '' }} checked>
+              <input class="form-check-input" type="checkbox" id="remember-me" name="remember" {{ old('remember') ? 'checked' : '' }}>
               <label class="form-check-label" for="remember-me">
                 {{ __('Remember Me') }}
               </label>
@@ -91,4 +92,31 @@ $configData = Helper::appClasses();
     <!-- /Login -->
   </div>
 </div>
+@endsection
+
+@section('page-script')
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const loginInput = document.getElementById('login');
+    const passwordInput = document.getElementById('login-password');
+    const switchAccountButton = document.getElementById('switch-account');
+
+    [loginInput, passwordInput].forEach(function (input) {
+      if (!input) {
+        return;
+      }
+
+      input.removeAttribute('readonly');
+      input.disabled = false;
+    });
+
+    if (switchAccountButton && loginInput && passwordInput) {
+      switchAccountButton.addEventListener('click', function () {
+        loginInput.value = '';
+        passwordInput.value = '';
+        loginInput.focus();
+      });
+    }
+  });
+</script>
 @endsection

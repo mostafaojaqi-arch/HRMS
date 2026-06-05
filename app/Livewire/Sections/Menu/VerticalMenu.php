@@ -12,7 +12,21 @@ class VerticalMenu extends Component
 
     public function mount()
     {
-        $this->role = User::find(Auth::id())?->getRoleNames()->first();
+        $user = User::find(Auth::id());
+
+        if (! $user) {
+            $this->role = null;
+
+            return;
+        }
+
+        if ($user->hasRole('Admin')) {
+            $this->role = 'Admin';
+
+            return;
+        }
+
+        $this->role = $user->getRoleNames()->first();
     }
 
     public function render()

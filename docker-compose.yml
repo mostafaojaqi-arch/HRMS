@@ -52,4 +52,5 @@ networks:
         driver: bridge
 volumes:
     sail-mysql:
-        driver: local
+        external: true
+        name: '${MYSQL_DATA_VOLUME:-sail-mysql}'

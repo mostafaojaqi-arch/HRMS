@@ -14,6 +14,9 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
+        $adminEmail = (string) env('ADMIN_EMAIL', 'admin@demo.com');
+        $adminUsername = (string) env('ADMIN_USERNAME', 'administrator');
+
         $this->call([
             ContractsSeeder::class,
             EmployeesSeeder::class,
@@ -32,11 +35,15 @@ class DatabaseSeeder extends Seeder
             ]);
         }
 
-        // Create role
-        $adminRole = Role::create(['name' => 'Admin']);
+        $adminRole = Role::query()->firstOrCreate(['name' => 'Admin', 'guard_name' => 'web']);
 
-        // Assign role
-        $admin = User::find(1);
-        $admin->assignRole($adminRole);
+        $admin = User::query()
+            ->where('email', $adminEmail)
+            ->orWhere('username', $adminUsername)
+            ->first();
+
+        if ($admin && ! $admin->hasRole('Admin')) {
+            $admin->assignRole($adminRole);
+        }
     }
 }
