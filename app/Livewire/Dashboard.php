@@ -73,6 +73,19 @@ class Dashboard extends Component
 
         $this->employee = $user;
 
+        if (! $user) {
+            $this->activeEmployees = collect();
+            $this->selectedEmployeeId = null;
+            $this->employeePhoto = 'profile-photos/.default-photo.jpg';
+            $this->leaveTypes = Leave::all();
+            $this->fromDateLimit = Carbon::now()
+                ->subDays(30)
+                ->format('Y-m-d');
+            $this->changelogs = Changelog::latest()->get();
+
+            return;
+        }
+
         $center = Center::find(
             $user
                 ->timelines()

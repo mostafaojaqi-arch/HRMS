@@ -65,7 +65,10 @@
         <div class="card-header">
           <div class="d-flex justify-content-between mb-3">
             <div class="card-title mb-0">
-              <h4 class="card-title mb-1">{{ __('Hi,') }} {{ Employee::find(Auth::user()->employee_id)->first_name }}! 👋</h4>
+              @php
+                $dashboardEmployee = Employee::find(Auth::user()->employee_id);
+              @endphp
+              <h4 class="card-title mb-1">{{ __('Hi,') }} {{ $dashboardEmployee?->first_name ?? explode(' ', Auth::user()->name)[0] }}! 👋</h4>
               <small class="text-muted">{{ __('Start your day with a smile') }}</small>
             </div>
             <small class="text-muted">{{ __('ID: ') . Auth::user()->employee_id }}</small>
@@ -197,7 +200,7 @@
                 <div class="d-flex align-items-center">
                   <div class="badge rounded-pill bg-label-warning me-3 p-2"><i class="ti ti-zzz ti-sm"></i></div>
                   <div class="card-info">
-                    <h5 class="mb-0">{{ $employee->max_leave_allowed }}</h5>
+                    <h5 class="mb-0">{{ $employee?->max_leave_allowed ?? '---' }}</h5>
                     <small>{{ __('Leaves Balance') }}</small>
                   </div>
                 </div>
@@ -206,7 +209,7 @@
                 <div class="d-flex align-items-center">
                   <div class="badge rounded-pill bg-label-warning me-3 p-2"><i class="ti ti-alarm ti-sm"></i></div>
                   <div class="card-info">
-                    <h5 class="mb-0">{{ $employee->hourly_counter }}</h5>
+                    <h5 class="mb-0">{{ $employee?->hourly_counter ?? '---' }}</h5>
                     <small>{{ __('Hourly Counter') }}</small>
                   </div>
                 </div>
@@ -215,7 +218,7 @@
                 <div class="d-flex align-items-center">
                   <div class="badge rounded-pill bg-label-warning me-3 p-2"><i class="ti ti-hourglass ti-sm"></i></div>
                   <div class="card-info">
-                    <h5 class="mb-0">{{ $employee->delay_counter }}</h5>
+                    <h5 class="mb-0">{{ $employee?->delay_counter ?? '---' }}</h5>
                     <small>{{ __('Delay Counter') }}</small>
                   </div>
                 </div>

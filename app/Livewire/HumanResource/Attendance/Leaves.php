@@ -74,13 +74,17 @@ class Leaves extends Component
         $this->leaveTypes = Leave::all();
 
         $user = Employee::find(Auth::user()->employee_id);
-        $center = Center::find(
-            $user
+        if ($user) {
+            $currentTimeline = $user
                 ->timelines()
                 ->where('end_date', null)
-                ->first()->center_id
-        );
-        $this->activeEmployees = $center->activeEmployees();
+                ->first();
+
+            $center = $currentTimeline ? Center::find($currentTimeline->center_id) : null;
+            $this->activeEmployees = $center ? $center->activeEmployees() : collect();
+        } else {
+            $this->activeEmployees = collect();
+        }
 
         $currentDate = Carbon::now();
         $previousMonth = $currentDate->copy()->subMonth();
@@ -324,12 +328,25 @@ class Leaves extends Component
     public function exportToExcel()
     {
         $user = Employee::find(Auth::user()->employee_id);
-        $center = Center::find(
-            $user
-                ->timelines()
-                ->where('end_date', null)
-                ->first()->center_id
-        );
+        if (! $user) {
+            session()->flash('error', __('No employee profile is linked to your account.'));
+
+            return;
+        }
+
+        $currentTimeline = $user
+            ->timelines()
+            ->where('end_date', null)
+            ->first();
+
+        $center = $currentTimeline ? Center::find($currentTimeline->center_id) : null;
+
+        if (! $center) {
+            session()->flash('error', __('No active timeline found for your profile.'));
+
+            return;
+        }
+
         $this->activeEmployees = $center->activeEmployees();
 
         $centerEmployees = array_map(function ($object) {
