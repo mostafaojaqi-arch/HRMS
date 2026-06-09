@@ -14,7 +14,6 @@ class ImportExternalEmployeesDataTest extends TestCase
         $tableMap = $reflection->getConstant('TABLE_MAP');
 
         $expectedSourceTables = [
-            'PERSONEL',
             'FIRMA_PERSONELI',
             'MAAS',
             'PERSONEL_IZIN',
@@ -41,6 +40,8 @@ class ImportExternalEmployeesDataTest extends TestCase
         foreach ($expectedSourceTables as $sourceTable) {
             $this->assertArrayHasKey($sourceTable, $tableMap);
         }
+
+        $this->assertArrayNotHasKey('PERSONEL', $tableMap);
     }
 
     public function test_parse_schema_aliases_returns_expected_company_map(): void
@@ -87,25 +88,52 @@ class ImportExternalEmployeesDataTest extends TestCase
         $this->assertFalse($method->invoke($command, $narrowColumnMap, 'PERSONEL_RESIMLERI'));
     }
 
-    public function test_build_qualified_source_table_name_for_sql_server(): void
+    public function test_employee_view_sources_match_required_views(): void
     {
-        $command = new ImportExternalEmployeesData;
         $reflection = new ReflectionClass(ImportExternalEmployeesData::class);
-        $method = $reflection->getMethod('buildQualifiedSourceTableName');
+        $employeeViewSources = $reflection->getConstant('EMPLOYEE_VIEW_SOURCES');
 
-        $qualifiedName = $method->invoke($command, 'D00002', 'dbo', 'PERSONEL');
-
-        $this->assertSame('[D00002].[dbo].[PERSONEL]', $qualifiedName);
+        $this->assertSame([
+            [
+                'catalog' => null,
+                'schema' => 'D00001',
+                'view' => 'W_PERSONNEL_LIST',
+                'company' => 'stern',
+                'source_scope' => 'D00001',
+            ],
+            [
+                'catalog' => 'PrestoXL',
+                'schema' => 'D00002',
+                'view' => 'W_PERSONNEL_LIST',
+                'company' => 'altona',
+                'source_scope' => 'D00002',
+            ],
+        ], $employeeViewSources);
     }
 
-    public function test_requires_personnel_import_guard_when_personel_is_selected_or_all_tables_selected(): void
+    public function test_should_import_employees_from_views_for_default_or_explicit_selection(): void
     {
         $command = new ImportExternalEmployeesData;
         $reflection = new ReflectionClass(ImportExternalEmployeesData::class);
-        $method = $reflection->getMethod('requiresPersonnelImportGuard');
+        $method = $reflection->getMethod('shouldImportEmployeesFromViews');
 
         $this->assertTrue($method->invoke($command, []));
         $this->assertTrue($method->invoke($command, ['PERSONEL']));
+        $this->assertTrue($method->invoke($command, ['W_PERSONNEL_LIST']));
         $this->assertFalse($method->invoke($command, ['PERSONEL_RESIMLERI']));
+    }
+
+    public function test_build_personnel_employees_required_columns_includes_metadata_and_unique_fields(): void
+    {
+        $command = new ImportExternalEmployeesData;
+        $reflection = new ReflectionClass(ImportExternalEmployeesData::class);
+        $method = $reflection->getMethod('buildPersonnelEmployeesRequiredColumns');
+
+        $columns = $method->invoke($command, ['personnel_id', 'name', 'name']);
+
+        $this->assertSame(
+            ['personnel_id', 'name', 'company', 'source_schema', 'source_table'],
+            $columns
+        );
     }
 }

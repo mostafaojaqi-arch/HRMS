@@ -13,8 +13,6 @@ class ImportExternalEmployeesData extends Command
 {
     private const PERSONNEL_IMAGES_TABLE = 'personnel_images';
 
-    private const DEFAULT_SQLSERVER_SCHEMA = 'dbo';
-
     private const WIDE_TABLE_COLUMN_THRESHOLD = 150;
 
     private const FAST_CHUNK_FLOOR = 2000;
@@ -22,6 +20,11 @@ class ImportExternalEmployeesData extends Command
     private const MAX_BIND_PARAMS_PER_QUERY = 65000;
 
     private const PAYLOAD_CHUNK_CAP = 100;
+
+    /**
+     * @var array<int, string>
+     */
+    private const EMPLOYEE_METADATA_COLUMNS = ['company', 'source_schema', 'source_table'];
 
     /**
      * @var array<string, bool>
@@ -39,8 +42,8 @@ class ImportExternalEmployeesData extends Command
         {--username=BiUser : SQL Server username}
         {--password= : SQL Server password}
             {--database=PrestoXL : SQL Server database name}
-                {--schemas=D00001:Altona,D00002:Stern : Comma separated source-scope:alias pairs (scope can be schema or database/catalog)}
-        {--tables= : Optional comma separated source table names (e.g. PERSONEL,PERSONEL_RESIMLERI)}
+            {--schemas=D00001:stern,D00002:altona : Comma separated schema:alias pairs}
+        {--tables= : Optional comma separated source table names (e.g. W_PERSONNEL_LIST,PERSONEL_RESIMLERI)}
         {--chunk=500 : Insert chunk size}
         {--truncate : Truncate destination tables before import}';
 
@@ -52,7 +55,6 @@ class ImportExternalEmployeesData extends Command
     protected $description = 'Import Turkish HR tables from external SQL Server into English-named local tables.';
 
     private const TABLE_MAP = [
-        'PERSONEL' => 'personnel_employees',
         'FIRMA_PERSONELI' => 'company_personnel',
         'MAAS' => 'salary',
         'PERSONEL_UCRET_KESINTI' => 'personnel_salary_deductions',
@@ -85,6 +87,26 @@ class ImportExternalEmployeesData extends Command
         'TECH_RDV_PERSONEL' => 'technical_appointment_personnel',
         'PERSONEL_ICRA' => 'personnel_enforcement_legal_action',
         'ISYERI_PERSONEL_BAG' => 'workplace_personnel_connection',
+    ];
+
+    /**
+     * @var array<int, array{catalog: string|null, schema: string, view: string, company: string, source_scope: string}>
+     */
+    private const EMPLOYEE_VIEW_SOURCES = [
+        [
+            'catalog' => null,
+            'schema' => 'D00001',
+            'view' => 'W_PERSONNEL_LIST',
+            'company' => 'stern',
+            'source_scope' => 'D00001',
+        ],
+        [
+            'catalog' => 'PrestoXL',
+            'schema' => 'D00002',
+            'view' => 'W_PERSONNEL_LIST',
+            'company' => 'altona',
+            'source_scope' => 'D00002',
+        ],
     ];
 
     private const TOKEN_MAP = [
@@ -157,14 +179,23 @@ class ImportExternalEmployeesData extends Command
 
         $schemaAliases = $this->parseSchemaAliases((string) $this->option('schemas'));
         $connectionName = $this->configureExternalConnection((string) $this->option('database'));
+        $selectedTables = $this->selectedTables();
 
         DB::connection($connectionName)->disableQueryLog();
+
+        try {
+            $this->importPersonnelEmployeesFromViews($connectionName, $selectedTables, $chunkSize);
+        } catch (\Throwable $exception) {
+            $this->error("Employee views import failed: {$exception->getMessage()}");
+
+            return self::FAILURE;
+        }
 
         foreach ($schemaAliases as $schema => $alias) {
             $this->info("Importing from SQL Server schema [$schema] as [$alias]...");
 
             try {
-                $this->importSchema($connectionName, $schema, $alias, $chunkSize);
+                $this->importSchema($connectionName, $schema, $alias, $chunkSize, $selectedTables);
             } catch (\Throwable $exception) {
                 $this->error("Schema [$schema] failed: {$exception->getMessage()}");
 
@@ -204,44 +235,141 @@ class ImportExternalEmployeesData extends Command
         return $result;
     }
 
-    private function importSchema(string $connectionName, string $sourceScope, string $alias, int $chunkSize): void
+    /**
+     * @param  array<int, string>  $selectedTables
+     */
+    private function importPersonnelEmployeesFromViews(string $connectionName, array $selectedTables, int $chunkSize): void
     {
-        $selectedTables = $this->selectedTables();
-        $requiresPersonnelImport = $this->requiresPersonnelImportGuard($selectedTables);
-        $personnelTableFound = false;
-        $personnelRowsImported = 0;
+        if (! $this->shouldImportEmployeesFromViews($selectedTables)) {
+            return;
+        }
 
+        $destinationTable = $this->destinationTableName('personnel_employees');
+        $viewImports = [];
+        $allTranslatedColumns = [];
+
+        foreach (self::EMPLOYEE_VIEW_SOURCES as $viewSource) {
+            $sourceColumns = $this->loadSourceColumns(
+                $connectionName,
+                $viewSource['schema'],
+                $viewSource['view'],
+                $viewSource['catalog']
+            );
+
+            if ($sourceColumns === []) {
+                throw new \RuntimeException(
+                    'Employee source view ['
+                    .$this->buildQualifiedObjectName($viewSource['catalog'], $viewSource['schema'], $viewSource['view'])
+                    .'] has no discoverable columns.'
+                );
+            }
+
+            $columnMap = $this->buildColumnMap($sourceColumns);
+            $allTranslatedColumns = array_values(array_unique(array_merge($allTranslatedColumns, array_values($columnMap))));
+
+            $viewImports[] = [
+                'source' => $viewSource,
+                'column_map' => $columnMap,
+            ];
+        }
+
+        $this->syncPersonnelEmployeesTableStructure($destinationTable, $allTranslatedColumns);
+
+        foreach ($viewImports as $viewImport) {
+            $viewSource = $viewImport['source'];
+            $columnMap = $viewImport['column_map'];
+            $usePayloadMode = false;
+            $insertChunkSize = $this->resolveInsertChunkSize($chunkSize, false, count($columnMap));
+
+            $this->line(
+                'Importing employee view ['
+                .$this->buildQualifiedObjectName($viewSource['catalog'], $viewSource['schema'], $viewSource['view'])
+                ."] ({$viewSource['company']}) -> [$destinationTable]..."
+            );
+
+            $this->streamRowsFromQualifiedSource(
+                $connectionName,
+                $this->buildQualifiedObjectName($viewSource['catalog'], $viewSource['schema'], $viewSource['view']),
+                $destinationTable,
+                $columnMap,
+                $viewSource['company'],
+                $viewSource['source_scope'],
+                $viewSource['view'],
+                $usePayloadMode,
+                $insertChunkSize
+            );
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $translatedColumns
+     */
+    private function syncPersonnelEmployeesTableStructure(string $destinationTable, array $translatedColumns): void
+    {
+        $requiredColumns = $this->buildPersonnelEmployeesRequiredColumns($translatedColumns);
+
+        if (Schema::hasTable($destinationTable)) {
+            Schema::drop($destinationTable);
+        }
+
+        Schema::create($destinationTable, function (Blueprint $table) use ($requiredColumns): void {
+            $table->bigIncrements('import_id');
+
+            foreach ($requiredColumns as $columnName) {
+                $table->longText($columnName)->nullable();
+            }
+
+            $table->timestamps();
+        });
+
+        $this->truncatedTables[$destinationTable] = true;
+    }
+
+    /**
+     * @param  array<int, string>  $translatedColumns
+     * @return array<int, string>
+     */
+    private function buildPersonnelEmployeesRequiredColumns(array $translatedColumns): array
+    {
+        return array_values(array_unique(array_merge($translatedColumns, self::EMPLOYEE_METADATA_COLUMNS)));
+    }
+
+    /**
+     * @param  array<int, string>  $selectedTables
+     */
+    private function shouldImportEmployeesFromViews(array $selectedTables): bool
+    {
+        return $selectedTables === []
+            || in_array('PERSONEL', $selectedTables, true)
+            || in_array('W_PERSONNEL_LIST', $selectedTables, true);
+    }
+
+    /**
+     * @param  array<int, string>  $selectedTables
+     */
+    private function importSchema(
+        string $connectionName,
+        string $schema,
+        string $alias,
+        int $chunkSize,
+        array $selectedTables
+    ): void {
         foreach (self::TABLE_MAP as $sourceTable => $englishTableName) {
             if ($selectedTables !== [] && ! in_array($sourceTable, $selectedTables, true)) {
                 continue;
             }
 
-            $sourceTableReference = $this->resolveSourceTableReference($connectionName, $sourceScope, $sourceTable);
-
-            if ($sourceTableReference === null) {
-                if ($sourceTable === 'PERSONEL') {
-                    $personnelTableFound = false;
-                }
-
-                $this->warn("Skipping missing source table [$sourceScope.$sourceTable].");
+            if (! $this->sourceTableExists($connectionName, $schema, $sourceTable)) {
+                $this->warn("Skipping missing source table [$schema.$sourceTable].");
 
                 continue;
             }
 
-            if ($sourceTable === 'PERSONEL') {
-                $personnelTableFound = true;
-            }
-
             $destinationTable = $this->destinationTableName($englishTableName);
-            $columns = $this->loadSourceColumns(
-                $connectionName,
-                $sourceTableReference['catalog'],
-                $sourceTableReference['schema'],
-                $sourceTable
-            );
+            $columns = $this->loadSourceColumns($connectionName, $schema, $sourceTable);
 
             if ($columns === []) {
-                $this->warn("Skipping [$sourceScope.$sourceTable] because no columns were discovered.");
+                $this->warn("Skipping [$schema.$sourceTable] because no columns were discovered.");
 
                 continue;
             }
@@ -261,41 +389,19 @@ class ImportExternalEmployeesData extends Command
                 $this->truncatedTables[$destinationTable] = true;
             }
 
-            $this->line(
-                "Importing [{$sourceTableReference['qualified_table']}] ($alias) -> [$destinationTable]..."
-            );
+            $this->line("Importing [$schema.$sourceTable] ($alias) -> [$destinationTable]...");
 
-            $importedRows = $this->streamRowsIntoDestination(
+            $this->streamRowsIntoDestination(
                 $connectionName,
-                $sourceScope,
+                $schema,
                 $sourceTable,
                 $destinationTable,
                 $columnMap,
                 $alias,
-                $sourceTableReference,
                 $usePayloadMode,
                 $insertChunkSize
             );
-
-            if ($sourceTable === 'PERSONEL') {
-                $personnelRowsImported += $importedRows;
-            }
         }
-
-        if ($requiresPersonnelImport && (! $personnelTableFound || $personnelRowsImported === 0)) {
-            throw new \RuntimeException(
-                "Source scope [$sourceScope] imported zero rows from PERSONEL. "
-                .'Import aborted to prevent partial employee data.'
-            );
-        }
-    }
-
-    /**
-     * @param  array<int, string>  $selectedTables
-     */
-    private function requiresPersonnelImportGuard(array $selectedTables): bool
-    {
-        return $selectedTables === [] || in_array('PERSONEL', $selectedTables, true);
     }
 
     /**
@@ -368,80 +474,52 @@ class ImportExternalEmployeesData extends Command
         return $connectionName;
     }
 
-    /**
-     * @return array{catalog: string, schema: string, qualified_table: string}|null
-     */
-    private function resolveSourceTableReference(string $connectionName, string $sourceScope, string $sourceTable): ?array
+    private function sourceTableExists(string $connectionName, string $schema, string $sourceTable): bool
     {
-        $tableMetadataRows = DB::connection($connectionName)
+        return DB::connection($connectionName)
             ->table('INFORMATION_SCHEMA.TABLES')
-            ->select('TABLE_CATALOG', 'TABLE_SCHEMA')
             ->where('TABLE_NAME', $sourceTable)
-            ->where(function ($query) use ($sourceScope): void {
-                $query
-                    ->where('TABLE_SCHEMA', $sourceScope)
-                    ->orWhere('TABLE_CATALOG', $sourceScope);
-            })
-            ->get();
-
-        if ($tableMetadataRows->isEmpty()) {
-            return null;
-        }
-
-        $sortedRows = $tableMetadataRows
-            ->sortBy(function ($row) use ($sourceScope): array {
-                $rowSchema = (string) ($row->TABLE_SCHEMA ?? '');
-                $rowCatalog = (string) ($row->TABLE_CATALOG ?? '');
-
-                if ($rowSchema === $sourceScope) {
-                    return [0, $rowCatalog, $rowSchema];
-                }
-
-                if (
-                    $rowCatalog === $sourceScope
-                    && Str::lower($rowSchema) === self::DEFAULT_SQLSERVER_SCHEMA
-                ) {
-                    return [1, $rowCatalog, $rowSchema];
-                }
-
-                return [2, $rowCatalog, $rowSchema];
-            })
-            ->values();
-
-        $resolved = $sortedRows->first();
-        $catalog = (string) ($resolved->TABLE_CATALOG ?? '');
-        $schema = (string) ($resolved->TABLE_SCHEMA ?? '');
-
-        return [
-            'catalog' => $catalog,
-            'schema' => $schema,
-            'qualified_table' => $this->buildQualifiedSourceTableName($catalog, $schema, $sourceTable),
-        ];
-    }
-
-    private function buildQualifiedSourceTableName(string $catalog, string $schema, string $table): string
-    {
-        $safeCatalog = str_replace(']', ']]', $catalog);
-        $safeSchema = str_replace(']', ']]', $schema);
-        $safeTable = str_replace(']', ']]', $table);
-
-        return "[$safeCatalog].[$safeSchema].[$safeTable]";
+            ->where('TABLE_SCHEMA', $schema)
+            ->exists();
     }
 
     /**
      * @return array<int, string>
      */
-    private function loadSourceColumns(string $connectionName, string $catalog, string $schema, string $sourceTable): array
-    {
-        return DB::connection($connectionName)
+    private function loadSourceColumns(
+        string $connectionName,
+        string $schema,
+        string $sourceTable,
+        ?string $catalog = null
+    ): array {
+        $query = DB::connection($connectionName)
             ->table('INFORMATION_SCHEMA.COLUMNS')
             ->where('TABLE_NAME', $sourceTable)
-            ->where('TABLE_CATALOG', $catalog)
-            ->where('TABLE_SCHEMA', $schema)
+            ->where('TABLE_SCHEMA', $schema);
+
+        if ($catalog !== null && $catalog !== '') {
+            $query->where('TABLE_CATALOG', $catalog);
+        }
+
+        return $query
             ->orderBy('ORDINAL_POSITION')
             ->pluck('COLUMN_NAME')
             ->map(static fn ($column) => (string) $column)
             ->toArray();
+    }
+
+    private function buildQualifiedObjectName(?string $catalog, string $schema, string $object): string
+    {
+        $safeSchema = str_replace(']', ']]', $schema);
+        $safeObject = str_replace(']', ']]', $object);
+
+        if ($catalog === null || $catalog === '') {
+            return "[$safeSchema].[$safeObject]";
+        }
+
+        $safeCatalog = str_replace(']', ']]', $catalog);
+
+        return "[$safeCatalog].[$safeSchema].[$safeObject]";
     }
 
     /**
@@ -653,39 +731,65 @@ class ImportExternalEmployeesData extends Command
      */
     private function streamRowsIntoDestination(
         string $connectionName,
-        string $sourceScope,
+        string $schema,
         string $sourceTable,
         string $destinationTable,
         array $columnMap,
         string $company,
-        array $sourceTableReference,
         bool $usePayloadMode,
         int $chunkSize
-    ): int {
+    ): void {
         if ($sourceTable === 'PERSONEL_RESIMLERI') {
-            return $this->streamPersonnelImagesIntoDestination(
+            $this->streamPersonnelImagesIntoDestination(
                 $connectionName,
-                $sourceScope,
+                $schema,
                 $sourceTable,
                 $destinationTable,
                 $company,
-                $sourceTableReference,
                 $chunkSize
             );
+
+            return;
         }
+
+        $this->streamRowsFromQualifiedSource(
+            $connectionName,
+            $this->buildQualifiedObjectName(null, $schema, $sourceTable),
+            $destinationTable,
+            $columnMap,
+            $company,
+            $schema,
+            $sourceTable,
+            $usePayloadMode,
+            $chunkSize
+        );
+    }
+
+    /**
+     * @param  array<string, string>  $columnMap
+     */
+    private function streamRowsFromQualifiedSource(
+        string $connectionName,
+        string $qualifiedSource,
+        string $destinationTable,
+        array $columnMap,
+        string $company,
+        string $sourceSchema,
+        string $sourceTable,
+        bool $usePayloadMode,
+        int $chunkSize
+    ): void {
 
         $buffer = [];
         $imported = 0;
         $timestamp = now();
 
-        $sourceSelectSql = 'SELECT * FROM '.$sourceTableReference['qualified_table'];
-
-        foreach (DB::connection($connectionName)->cursor($sourceSelectSql) as $row) {
+        foreach (DB::connection($connectionName)->cursor('SELECT * FROM '.$qualifiedSource) as $row) {
             $buffer[] = $this->transformRow(
                 $row,
                 $columnMap,
                 $company,
-                $sourceScope,
+                $sourceSchema,
                 $sourceTable,
                 $usePayloadMode,
                 $timestamp
@@ -706,26 +810,26 @@ class ImportExternalEmployeesData extends Command
         }
 
         $this->info("Imported $imported rows into [$destinationTable].");
-
-        return $imported;
     }
 
     private function streamPersonnelImagesIntoDestination(
         string $connectionName,
-        string $sourceScope,
+        string $schema,
         string $sourceTable,
         string $destinationTable,
         string $company,
-        array $sourceTableReference,
         int $chunkSize
-    ): int {
+    ): void {
+        $safeSchema = str_replace(']', ']]', $schema);
+        $safeTable = str_replace(']', ']]', $sourceTable);
+
         $offset = 0;
         $imported = 0;
 
         while (true) {
             $rows = DB::connection($connectionName)->select(
                 'SELECT PERSONEL_ID, CAST(RESIM AS VARBINARY(MAX)) AS RESIM '
-                .'FROM '.$sourceTableReference['qualified_table'].' '
+                ."FROM [{$safeSchema}].[{$safeTable}] "
                 .'ORDER BY PERSONEL_ID '
                 .'OFFSET ? ROWS FETCH NEXT ? ROWS ONLY',
                 [$offset, $chunkSize]
@@ -757,7 +861,7 @@ class ImportExternalEmployeesData extends Command
                     'personnel_id' => isset($row->PERSONEL_ID) ? (int) $row->PERSONEL_ID : null,
                     'resim' => $resim,
                     'company' => $company,
-                    'source_schema' => $sourceScope,
+                    'source_schema' => $schema,
                     'source_table' => $sourceTable,
                     'created_at' => $timestamp,
                     'updated_at' => $timestamp,
@@ -773,8 +877,6 @@ class ImportExternalEmployeesData extends Command
         }
 
         $this->info("Imported $imported rows into [$destinationTable].");
-
-        return $imported;
     }
 
     /**
