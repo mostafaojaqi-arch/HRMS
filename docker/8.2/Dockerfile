@@ -39,6 +39,13 @@ RUN apt-get update \
     && apt-get install -y yarn \
     && apt-get install -y mysql-client \
     && apt-get install -y postgresql-client-$POSTGRES_VERSION \
+    && echo "deb [arch=amd64,arm64,armhf trusted=yes] https://packages.microsoft.com/ubuntu/22.04/prod jammy main" > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev \
+    && pecl channel-update pecl.php.net \
+    && pecl install sqlsrv-5.12.0 pdo_sqlsrv-5.12.0 \
+    && echo "extension=sqlsrv.so" > /etc/php/8.2/cli/conf.d/20-sqlsrv.ini \
+    && echo "extension=pdo_sqlsrv.so" > /etc/php/8.2/cli/conf.d/30-pdo_sqlsrv.ini \
     && apt-get -y autoremove \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
