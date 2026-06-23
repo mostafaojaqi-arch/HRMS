@@ -60,6 +60,18 @@
           "name": "Employees",
           "slug": "structure-employees",
           "role": ["HR"]
+        },
+        {
+          "url": "structure/timesheet",
+          "name": "Time Sheet",
+          "slug": "structure-timesheet",
+          "role": ["HR"]
+        },
+        {
+          "url": "structure/timesheet-linkage",
+          "name": "Time Sheet Linkage",
+          "slug": "structure-timesheet-linkage",
+          "role": ["HR"]
         }
       ]
     },

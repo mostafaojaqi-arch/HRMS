@@ -17,6 +17,8 @@ use App\Livewire\HumanResource\Structure\Departments;
 use App\Livewire\HumanResource\Structure\EmployeeInfo;
 use App\Livewire\HumanResource\Structure\Employees;
 use App\Livewire\HumanResource\Structure\Positions;
+use App\Livewire\HumanResource\Structure\TimeSheet;
+use App\Livewire\HumanResource\Structure\TimeSheetLinkage;
 use App\Livewire\MaintenanceMode;
 use App\Livewire\Misc\ComingSoon;
 use App\Livewire\Settings\Users;
@@ -67,6 +69,8 @@ Route::middleware([
             Route::get('/positions', Positions::class)->name('structure-positions');
             Route::get('/employees', Employees::class)->name('structure-employees');
             Route::get('/employee/{id?}', EmployeeInfo::class)->name('structure-employees-info');
+            Route::get('/timesheet', TimeSheet::class)->name('structure-timesheet');
+            Route::get('/timesheet-linkage', TimeSheetLinkage::class)->name('structure-timesheet-linkage');
         });
     });
 
